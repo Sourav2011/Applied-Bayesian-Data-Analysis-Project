@@ -1,0 +1,1502 @@
+---
+title: "Does International Shipping Affect Product Ratings ?"
+output: html_document
+date: "2025-01-25"
+---
+```{r setup, include=FALSE}
+
+
+library(tidyverse)
+library(modelr)
+library(tidybayes)
+library(dplyr)
+library(bayesplot)
+library(posterior)
+library(ggplot2)
+library(patchwork)
+library(brms)
+library(ROCR)
+
+
+```
+
+
+
+#Load Dataset
+
+```{r}
+
+merch_data <- read.csv("merch_sales.csv")
+#install.packages("data.table")
+head(merch_data)
+
+
+```
+
+
+```{r}
+
+names(merch_data)
+
+```
+
+
+################### DATA UNDERSTANDING and DATA PRE-PROCESSING  ######################
+######################################################################################
+######################################################################################
+
+
+```{r}
+# Selecting Relevant Columns
+
+merch_data_new <- merch_data[, !names(merch_data) %in% c("Order.ID", "Order.Date", "Order.Location", "Review")]
+
+# View of Updated Dataset
+
+head(merch_data_new)
+
+```
+
+
+```{r}
+names(merch_data_new)
+```
+
+```{r}
+
+# Encoding non-numerical columns as factors
+merch_data_new$Buyer.Gender <- as.numeric(as.factor(merch_data_new$Buyer.Gender))
+merch_data_new$International.Shipping <- as.numeric(as.factor(merch_data_new$International.Shipping))
+merch_data_new$Rating <- as.numeric(as.factor(merch_data_new$Rating))
+merch_data_new$Product.ID <- as.numeric(as.factor(merch_data_new$Product.ID))
+merch_data_new$Product.Category <- as.numeric(as.factor(merch_data_new$Product.Category))
+head(merch_data_new)
+
+
+```
+
+```{r}
+# Computing the correlation matrix for the numeric data
+
+cor_matrix <- cor(merch_data_new, use = "complete.obs")
+
+
+# Visualizing the correlation matrix
+
+library(corrplot)
+
+# Save the plot
+png("correlation_matrix.png", width = 1200, height = 1200, res = 150)
+
+# Plot the correlation matrix 
+corrplot(cor_matrix,
+         method = "color",        
+         type = "upper",          # display upper triangular matrix
+         tl.col = "black",        
+         tl.cex = 1.5,            
+         number.cex = 1.2,       
+         addCoef.col = "black",  
+         mar = c(0, 0, 2, 0))     
+
+
+dev.off()
+
+```
+
+
+```{r}
+
+# Converting the numeric Rating column to an ordered factor
+
+merch_data_new$Rating <- factor(merch_data_new$Rating, 
+                      levels = c(1, 2, 3, 4, 5),          # Specifying the order explicitly
+                      ordered = TRUE)
+
+# Verifying the conversion
+
+str(merch_data_new$Rating)
+
+head(merch_data_new$Rating)
+
+```
+
+
+```{r}
+
+write.csv(merch_data_new, "merch_sales_new_factor.csv", row.names = FALSE)
+
+```
+
+
+
+```{r}
+
+merch_data_updated <- read.csv("merch_sales_new_factor.csv")
+head(merch_data_updated)
+
+```
+
+
+```{r}
+
+# Distribution Of Rating Column
+
+# png("Distribution Of Ratings.png", width = 2000, height = 1500, res = 300)
+
+# Creating a bar plot for the ordinal Rating column
+
+barplot(table(merch_data_updated$Rating),
+        main = "Distribution of Ratings",
+        xlab = "Ratings",
+        ylab = "Frequency",
+        col = "lightblue",
+        border = "black")
+
+
+
+```
+
+
+```{r}
+
+# Plot for "Rating vs International Shipping"
+
+# png("Rating vs International Shipping.png", width = 2000, height = 1500, res = 300)
+
+boxplot(as.numeric(merch_data_updated$Rating) ~ merch_data_updated$International.Shipping,
+        main = "Rating vs International Shipping",
+        xlab = "International Shipping",
+        ylab = "Rating",
+        col = c("skyblue", "orange"),
+        names = c("Domestic", "International"),
+        border = "black")
+
+
+```
+
+```{r} 
+
+# Recoding (Numeric) Rating column back to ordered factor
+merch_data_updated$Rating <- factor(merch_data_updated$Rating, 
+                      levels = c(1, 2, 3, 4, 5), 
+                      ordered = TRUE)
+
+
+str(merch_data_updated$Rating)
+
+
+head(merch_data_updated$Rating)
+
+```
+
+
+
+```{r}
+
+# Factoring Product.Category
+
+merch_data_updated$Product.Category <- as.factor(merch_data_updated$Product.Category)
+levels(merch_data_updated$Product.Category)
+
+```
+
+
+```{r}
+
+# Re-encoding  International.Shipping back to a factor
+merch_data_updated$International.Shipping <- factor(
+  merch_data_updated$International.Shipping,
+  levels = c(1, 2),  
+  labels = c("Yes", "No")  # referencing
+)
+
+```
+
+
+```{r}
+
+# Factoring Buyer.Gender
+merch_data_updated$Buyer.Gender <- factor(merch_data_updated$Buyer.Gender, 
+                                      levels = c(1, 2), 
+                                      labels = c("Female", "Male"))  # referencing
+
+```
+
+
+```{r}
+levels(merch_data_updated$Buyer.Gender)
+
+head(merch_data_updated)
+
+```
+
+
+```{r}
+
+# Recoding  Product.ID back to a factor
+
+merch_data_updated$Product.ID <- as.character(merch_data_updated$Product.ID)
+merch_data_updated$Product.ID <- as.factor(merch_data_updated$Product.ID)
+
+
+```
+
+
+```{r}
+head(merch_data_updated)
+```
+
+
+
+############## MODEL IMPLEMENTATION #####################
+#########################################################
+#########################################################
+
+
+# ORDINAL MODEL WITH ALL FEATURE (Model 1)
+
+
+<!-- ```{r} -->
+
+<!--      prior <- c( -->
+<!--      set_prior("normal(0, 5)", class = "b"),           # Prior for regression coefficients -->
+<!--      set_prior("normal(0, 5)", class = "Intercept")    # Prior for thresholds -->
+<!--   ) -->
+
+<!--     # Fit the Bayesian ordinal regression model -->
+<!--     ordinal_model_fit1 <- brm( -->
+<!--     Rating ~ `International.Shipping` +  `Buyer.Age` + -->
+<!--               `Sales.Price` + `Quantity`, -->
+<!--     data = merch_data_updated, -->
+<!--     family = cumulative(),   # cumulative logit  -->
+<!--     prior = prior, -->
+<!--     chains = 4,              # Number of MCMC chains -->
+<!--     iter = 2000,             # Number of iterations per chain -->
+<!--     cores = parallel::detectCores() # Use all available cores -->
+<!--  ) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!--  saveRDS(ordinal_model_fit1, file = "ordinal_model_fit1.rds") -->
+
+<!-- ``` -->
+
+
+
+```{r}
+ordinal_model_fit1 <- readRDS("ordinal_model_fit1.rds")
+```
+
+
+```{r}
+summary(ordinal_model_fit1)
+```
+
+
+```{r}
+plot(ordinal_model_fit1, type = "dens overlay")
+
+```
+
+
+```{r}
+
+# Open a PNG graphics device
+#png("MCMC_ordinal_model_fit1.png", width = 2000, height = 1500, res = 300)
+mcmc_trace(ordinal_model_fit1)
+#dev.off()
+
+#png("MCMC_dens_ordinal_model_fit1.png", width = 2000, height = 1500, res = 300)
+mcmc_plot(ordinal_model_fit1 , type = "dens")
+#dev.off()
+
+```
+
+
+
+```{r}
+
+# Posterior predictive checks
+#png("pp_check_density_ordinal_model_fit1.png", width = 2000, height = 1500, res = 300)
+pp_check(ordinal_model_fit1, ndraws = 100)
+#dev.off()
+
+# Posterior predictive check
+#png("pp_check_bar_ordinal_model_fit1.png", width = 2000, height = 1500, res = 300)
+pp_check(ordinal_model_fit1, type = "bars")
+#dev.off()
+
+```
+
+
+
+```{r}
+
+# Plotting conditional effects for International Shipping
+#png("conditional_effects_plot_ordinal_model_fit1.png", width = 2000, height = 1500, res = 300)
+conditional_effects_plot <- conditional_effects(
+  ordinal_model_fit1,
+  effects = "International.Shipping",
+  categorical = TRUE
+)
+plot(conditional_effects_plot)
+
+```
+
+
+
+```{r}
+#  LOO on Ordinal_Model1
+loo_ordinal_fit1 <- loo(ordinal_model_fit1)
+
+print(loo_ordinal_fit1)  # View the LOO results
+
+#png("loo_ordinal_model_fit1.png", width = 2000, height = 1500, res = 300)
+plot(loo_ordinal_fit1)   # Plot the LOO results
+
+
+```
+
+
+
+# ORDINAL MODEL WITH INTERACTION : INTERNATIONAL SHIPPING * PRODUCT CATEGORY (Model 2)
+
+
+
+<!-- ```{r} -->
+<!--   ordinal_model_fit2 <- brm( -->
+<!--         formula = Rating ~ International.Shipping * Product.Category,  # Including interaction term -->
+<!--         data = merch_data_updated, -->
+<!--         family = cumulative(),   -->
+<!--         prior = c( -->
+<!--         prior(normal(0, 5), class = "b") + -->
+<!--         prior("normal(0, 5)", class = "Intercept") #  prior for thresholds and regression coefficients -->
+<!--          ), -->
+<!--         iter = 2000, -->
+<!--         warmup = 1000, -->
+<!--         chains = 4, -->
+<!--         cores = 4, -->
+<!--         seed = 123 -->
+<!--         ) -->
+
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+
+<!-- saveRDS(ordinal_model_fit2, file = "ordinal_model_fit2.rds") -->
+
+<!-- ``` -->
+
+
+
+```{r}
+
+ordinal_model_fit2 <- readRDS("ordinal_model_fit2.rds")
+
+```
+
+
+```{r}
+summary(ordinal_model_fit2)
+
+```
+
+
+```{r}
+plot(ordinal_model_fit2)
+
+```
+
+
+```{r}
+
+#posterior predictive check density
+
+#png("pp_check_density_ordinal_model_fit2.png", width = 2000, height = 1500, res = 300)
+pp_check(ordinal_model_fit2, ndraws = 100)
+#dev.off()
+
+#posterior predictive check bar plot
+
+#png("pp_check_bar_ordinal_model_fit2.png", width = 2000, height = 1500, res = 300)
+pp_check(ordinal_model_fit2 , type = "bars")
+#dev.off()
+
+```
+
+
+```{r}
+
+#png("MCMC_trace_ordinal_model_fit2.png", width = 2000, height = 1500, res = 300)
+mcmc_plot(ordinal_model_fit2 , type = "trace")
+#dev.off()
+
+#png("MCMC_dens_ordinal_model_fit2.png", width = 2000, height = 1500, res = 300)
+mcmc_plot(ordinal_model_fit2 , type = "dens")
+#dev.off()
+
+```
+
+
+
+
+```{r}
+#png("conditional_effects_plot_ordinal_model_fit2.png", width = 2000, height = 1500, res = 300)
+
+# Conditional effects plot for International Shipping across Product Categories
+conditional_effects_plot_interaction <- conditional_effects(
+  ordinal_model_fit2, 
+  effects = "International.Shipping:Product.Category",
+  conditions = data.frame(Product.Category = unique(merch_data_updated$Product.Category))  # Setting conditions
+)
+
+
+plot(conditional_effects_plot_interaction)
+
+```
+
+
+
+```{r}
+
+#  LOO on ordinal_model_fit2
+
+loo_ordinal_fit2 <- loo(ordinal_model_fit2)
+
+print(loo_ordinal_fit2)
+
+
+#png("loo_ordinal_model_fit2.png", width = 2000, height = 1500, res = 300)
+plot(loo_ordinal_fit2)
+
+
+```
+
+
+
+
+<!-- ## Ordinal Model with interaction + additional term -->
+
+
+<!-- ```{r} -->
+
+<!--  ordinal_model_fit3 <- brm( -->
+<!--    formula = Rating ~  International.Shipping + Product.Category * Shipping.Charges,  # Include interaction term + additional term -->
+<!--    data = merch_data_updated, -->
+<!--    family = cumulative(),  # Ordinal regression -->
+<!--    prior = c( -->
+<!--      prior(normal(0, 5), class = "b") + -->
+<!--      prior("normal(0, 5)", class = "Intercept")# Regularization prior for coefficients -->
+<!--    ), -->
+<!--    iter = 2000, -->
+<!--    warmup = 1000, -->
+<!--    chains = 4, -->
+<!--    cores = 4, -->
+<!--    seed = 123 -->
+<!--  )  -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- saveRDS(ordinal_model_fit3, file = "ordinal_model_fit3.rds") -->
+
+<!-- ``` -->
+
+
+
+
+<!-- ```{r} -->
+<!-- summary(ordinal_model_fit3) -->
+
+<!-- ``` -->
+
+
+
+<!-- ```{r} -->
+<!-- mcmc_plot(ordinal_model_fit3, type = "trace") -->
+<!-- mcmc_plot(ordinal_model_fit3, type = "dens") -->
+
+<!-- ``` -->
+
+
+
+
+<!-- ```{r} -->
+<!-- pp_check(ordinal_model_fit3, ndraws = 100) -->
+<!-- pp_check(ordinal_model_fit3, type = "bars") -->
+
+<!-- ``` -->
+
+
+
+<!-- ```{r} -->
+<!-- #  LOO on Ordinal_with_interaction + additional term -->
+
+<!-- loo_ordinal_fit3 <- loo(ordinal_model_fit3) -->
+<!-- print(loo_ordinal_fit3)# View the LOO results -->
+<!-- plot(loo_ordinal_fit3)# Plot the LOO results -->
+<!-- ``` -->
+
+
+
+
+
+
+
+<!-- # Ordinal Model with all features including Shipping.Charges -->
+
+<!-- ```{r} -->
+
+<!--      prior <- c( -->
+<!--      set_prior("normal(0, 5)", class = "b"),           # Prior for regression coefficients -->
+<!--      set_prior("normal(0, 5)", class = "Intercept")    # Prior for thresholds -->
+<!--   ) -->
+
+<!--     # Fit the Bayesian ordinal regression model -->
+<!--     ordinal_model_fit4 <- brm( -->
+<!--     Rating ~ `International.Shipping` +  `Buyer.Age` + -->
+<!--               `Sales.Price` + `Quantity`+ `Shipping.Charges`, -->
+<!--     data = merch_data_updated, -->
+<!--     family = cumulative(),   # Use the cumulative ordinal family -->
+<!--     prior = prior, -->
+<!--     chains = 4,              # Number of MCMC chains -->
+<!--     iter = 2000,             # Number of iterations per chain -->
+<!--     cores = parallel::detectCores() ,# Use all available cores -->
+<!--     control = list(adapt_delta = 0.999, max_treedepth = 20) -->
+<!--  ) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!--  saveRDS(ordinal_model_fit4, file = "ordinal_model_fit4.rds") -->
+
+<!-- ``` -->
+
+
+
+<!-- ```{r} -->
+
+<!-- ordinal_model_fit4 <- readRDS("ordinal_model_fit4.rds") -->
+
+<!-- ``` -->
+
+
+
+<!-- ```{r} -->
+
+<!-- summary(ordinal_model_fit4) -->
+
+<!-- ``` -->
+
+
+
+
+
+<!-- ```{r} -->
+<!-- mcmc_plot(ordinal_model_fit4, type = "trace") -->
+<!-- mcmc_plot(ordinal_model_fit4, type = "dens") -->
+
+<!-- ``` -->
+
+
+
+
+<!-- ```{r} -->
+<!-- pp_check(ordinal_model_fit4, ndraws = 100) -->
+<!-- pp_check(ordinal_model_fit4, type = "bars") -->
+
+<!-- ``` -->
+
+
+
+# Bayesian Hierarchical Model with Random effects  (1  | Product.Category/Product.ID) (Model 3)
+
+
+
+```{r}
+
+# Checking Nested Structure
+
+# Counting unique Product.Category values for each Product.ID
+
+category_counts <- merch_data_updated %>%
+  group_by(Product.ID) %>%
+  summarise(unique_categories = n_distinct(Product.Category))
+
+# Finding Product.IDs that appear in more than one category
+non_nested_ids <- category_counts %>% filter(unique_categories > 1)
+
+
+print(non_nested_ids)
+
+```
+
+
+
+
+<!-- ```{r} -->
+<!--  prior <- c( -->
+<!--     set_prior("normal(0, 5)", class = "b"),               # prior for regression coefficients -->
+<!--     set_prior("normal(0, 5)", class = "Intercept"),       # prior for intercepts -->
+<!--     set_prior("student_t(3, 0, 2)", class = "sd")         # prior for group-level standard deviations -->
+<!--   ) -->
+
+
+<!--   hierarchical_model <- brm( -->
+<!--     Rating ~ International.Shipping + Buyer.Age + -->
+<!--            (1  | Product.Category/Product.ID),  # Random effects -->
+<!--     data = merch_data_updated , -->
+<!--     family = cumulative(), -->
+<!--     prior = prior, -->
+<!--     chains = 4, -->
+<!--     iter = 2000, -->
+<!--     control = list(adapt_delta = 0.999, max_treedepth = 20), # for sampling efficiency and convergence issue -->
+<!--     cores = parallel::detectCores() -->
+<!--   ) -->
+
+<!-- ``` -->
+
+
+
+<!-- ```{r} -->
+<!-- saveRDS(hierarchical_model, file = "hierarchical_model_new_1.rds") -->
+
+<!-- ``` -->
+
+
+
+```{r}
+hierarchical_model <- readRDS("hierarchical_model_new_1.rds")
+
+```
+
+
+
+
+```{r}
+
+summary(hierarchical_model)
+
+```
+
+
+
+```{r}
+
+#png("MCMC_trace_hierarchical_model.png", width = 2000, height = 1500, res = 300)
+mcmc_plot(hierarchical_model, type = "trace")
+#dev.off()
+
+
+
+#png("MCMC_dens_hierarchical_model.png", width = 2000, height = 1500, res = 300)
+mcmc_plot(hierarchical_model, type = "dens")
+#dev.off()
+
+```
+
+
+
+```{r}
+
+#png("pp_check_density_hierarchical_model.png", width = 2000, height = 1500, res = 300)
+pp_check(hierarchical_model, ndraws = 100)
+#dev.off()
+
+#png("pp_check_bar_hierarchical_model.png", width = 2000, height = 1500, res = 300)
+pp_check(hierarchical_model, type = "bars")
+#dev.off()
+
+```
+
+
+
+
+```{r}
+
+# Defining the levels of factors explicitly
+conditions <- data.frame(
+  Product.Category = levels(merch_data_updated$Product.Category)
+)
+
+# Generating conditional effects for "International.Shipping" 
+
+ce <- conditional_effects(
+  hierarchical_model,
+  effects = "International.Shipping",
+  conditions = conditions,
+  categorical = TRUE  
+)
+
+
+plot(ce, points = TRUE)
+
+```
+
+
+
+```{r}
+
+#png("conditional_effects_plot_hierarchical_model.png", width = 2000, height = 1500, res = 300)
+
+# Conditional effects plot for International Shipping
+conditional_effects <- conditional_effects(
+  hierarchical_model, 
+  effects = "International.Shipping",
+  categorical = TRUE
+)
+
+# Plot
+plot(conditional_effects)
+
+
+```
+
+
+
+```{r}
+
+# Extracting random effects for Product.Category and Product.ID
+
+random_effects <- ranef(hierarchical_model)
+print(random_effects)  # Displays the random effect estimates
+
+
+```
+
+## Random Effects Visualization for Product.Category
+
+```{r}
+
+# Extracting random effects for Product.Category and converting to dataframe
+
+random_effects_df <- as.data.frame(ranef(hierarchical_model)$Product.Category[,, "Intercept"])
+
+# Renaming row names as Category IDs
+random_effects_df$Category_ID <- rownames(random_effects_df)
+
+# Checking structure to confirm column names
+
+str(random_effects_df)
+
+```
+
+
+
+
+```{r}
+
+#png("random1.png", width = 2000, height = 1500, res = 300)
+
+# Creating plots for random effects
+
+ggplot(random_effects_df, aes(x = as.factor(Category_ID), y = Estimate)) +
+  geom_point(size = 3) + 
+  geom_errorbar(aes(ymin = Q2.5, ymax = Q97.5), width = 0.2) +  # Error bars
+  geom_hline(yintercept = 0, color = "red") +  # Baseline reference
+  labs(title = "Random Effects for Product Categories",
+       x = "Product Category",
+       y = "Random Intercept Estimate") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 12))  
+
+
+```
+
+
+
+<!-- Each point represents the estimated random intercept for a Product.Category. -->
+<!-- The vertical error bars represent uncertainty -->
+<!-- If the error bars overlap 0, suggest category-level differences are not strongly significant. -->
+<!-- Product.Category significantly affects ratings if categories had shown large variations. -->
+
+
+## Random Effects Visualization for Product.ID
+
+
+```{r}
+
+# Extracting random effects & converting to dataframe
+random_effects_id <- as.data.frame(ranef(hierarchical_model)$Product.ID[, , "Intercept"])
+
+# Converting row names to column
+random_effects_id <- tibble::rownames_to_column(random_effects_id, var = "Product_ID")
+str(random_effects_df)
+
+```
+
+
+```{r}
+str(ranef(hierarchical_model)$Product.ID)
+
+```
+
+
+```{r}
+
+# Re-extracting Product.Id as it is nested under Product.Category
+
+random_effects_id <- as.data.frame(ranef(hierarchical_model)$'Product.Category:Product.ID'[, , "Intercept"])
+random_effects_id <- tibble::rownames_to_column(random_effects_id, var = "Product_ID")
+
+str(random_effects_id)  # Checking if data exists
+
+```
+
+
+```{r}
+
+# Factoring character(chr) for proper Visualization
+
+random_effects_id$Product_ID <- as.factor(random_effects_id$Product_ID)
+
+```
+
+
+```{r}
+# Plot Random Effects Product.ID
+
+#png("random2.png", width = 2000, height = 1500, res = 300)
+
+ggplot(random_effects_id, aes(x = Product_ID, y = Estimate)) +
+  geom_point(size = 3) +  # Dots represent intercept estimates
+  geom_errorbar(aes(ymin = Q2.5, ymax = Q97.5), width = 0.2) +  # Error bars indicating uncertainty
+  geom_hline(yintercept = 0, color = "purple") +  
+  labs(title = "Random Effects for Product IDs",
+       x = "Product ID",
+       y = "Random Intercept Estimate") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10)) 
+
+```
+
+
+
+
+```{r}
+
+#  LOO on Hierarchical Model
+
+loo_hierarchical_model <- loo(hierarchical_model)
+print(loo_hierarchical_model)# View the LOO results
+
+#png("loo_hierarchical_model.png", width = 2000, height = 1500, res = 300)
+plot(loo_hierarchical_model)
+
+```
+
+
+
+
+
+
+
+## Bayesian Hierarchical Model with Random Effects Product.Category/Product.Id and Buyer.Gender
+
+
+
+<!-- ```{r} -->
+
+<!-- hierarchical_model_2 <- brm( -->
+<!--   Rating ~ International.Shipping + -->
+<!--     (1 + International.Shipping| Product.Category/Product.ID) + (1 | Buyer.Gender), -->
+<!--   data = merch_data_updated, -->
+<!--   family = cumulative(), -->
+<!--   prior = c( -->
+<!--     set_prior("normal(0, 5)", class = "b"), -->
+<!--     set_prior("normal(0, 5)", class = "Intercept"), -->
+<!--     set_prior("student_t(3, 0, 2)", class = "sd") -->
+<!--   ), -->
+<!--   chains = 4, -->
+<!--   iter = 2000, -->
+<!--   control = list(adapt_delta = 0.999, max_treedepth = 20), -->
+<!--   cores = parallel::detectCores() -->
+<!-- ) -->
+
+<!-- ``` -->
+
+
+
+<!-- ```{r} -->
+<!--  saveRDS(hierarchical_model_2, file = "hierarchical_model_new_2.rds") -->
+<!-- ``` -->
+
+
+```{r}
+hierarchical_model_2 <- readRDS("hierarchical_model_new_2.rds")
+```
+
+
+
+```{r}
+summary(hierarchical_model_2)
+```
+
+
+
+```{r}
+
+#png("MCMC_trace_hierarchical_model_2.png", width = 2000, height = 1500, res = 300)
+mcmc_plot(hierarchical_model_2, type = "trace")
+#dev.off()
+
+#png("MCMC_dens_hierarchical_model_2.png", width = 2000, height = 1500, res = 300)
+mcmc_plot(hierarchical_model_2, type = "dens")
+#dev.off()
+```
+
+
+
+```{r}
+#png("pp_check_density_hierarchical_model_2.png", width = 2000, height = 1500, res = 300)
+pp_check(hierarchical_model_2, ndraws = 100)
+#dev.off()
+
+
+#png("pp_check_bar_hierarchical_model_2.png", width = 2000, height = 1500, res = 300)
+pp_check(hierarchical_model_2, type = "bars")
+#dev.off()
+```
+
+
+
+```{r}
+
+#  LOO on Hierarchical Model 2
+
+loo_hierarchical_model_2 <- loo(hierarchical_model_2)
+print(loo_hierarchical_model_2)
+
+png("loo_hierarchical_model_2.png", width = 2000, height = 1500, res = 300)
+plot(loo_hierarchical_model_2)
+
+```
+
+
+
+
+
+##############  MODEL COMPARISON  ##################
+####################################################
+####################################################
+
+
+```{r}
+## Loo Comparison
+
+# Compare the models
+loo_comparison <- loo_compare(loo_ordinal_fit1, loo_ordinal_fit2,loo_hierarchical_model)
+print(loo_comparison)# Print the comparison
+
+```
+
+
+
+<!-- ```{r} -->
+
+<!-- # Compare the models -->
+<!-- loo_comparison <- loo_compare(loo_ordinal_fit1, loo_ordinal_fit2,loo_hierarchical_model_2) -->
+<!-- print(loo_comparison)# Print the comparison -->
+
+<!-- ``` -->
+
+
+
+
+
+
+####################### Prior Sensitivity Analysis #############################
+################################################################################
+################################################################################
+
+
+
+
+# Prior Sensitivity Analysis For Ordinal_Model_Fit2 (Interaction term) (Model 2)
+
+
+# Modifying ordinal_model_fit2 with different priors normal(0,1) and normal(0,10)
+
+# Model with normal(0,1)
+
+<!-- ```{r} -->
+
+<!-- prior_sensitive_1 <- c( -->
+<!--   set_prior("normal(0, 1)", class = "b"), -->
+<!--   set_prior("normal(0, 1)", class = "Intercept") -->
+<!-- ) -->
+
+<!-- ordinal_model_fit2_normal_1 <- brm( -->
+<!--   formula = Rating ~ International.Shipping * Product.Category, -->
+<!--   data = merch_data_updated, -->
+<!--   family = cumulative(), -->
+<!--   prior = prior_sensitive_1, -->
+<!--   sample_prior = TRUE, -->
+<!--   iter = 2000, -->
+<!--   warmup = 1000, -->
+<!--   chains = 4, -->
+<!--   cores = parallel::detectCores(), -->
+<!--   seed = 123 -->
+<!-- ) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- saveRDS(ordinal_model_fit2_normal_1, file = "ordinal_model_fit2_normal_1.rds") -->
+
+<!-- ``` -->
+
+
+```{r}
+ordinal_model_fit2_normal_1 <- readRDS("ordinal_model_fit2_normal_1.rds")
+```
+
+
+```{r}
+summary(ordinal_model_fit2_normal_1)
+```
+
+# Model with normal(0,10)
+
+<!-- ```{r} -->
+
+<!-- prior_sensitive_2 <- c( -->
+<!--   set_prior("normal(0, 10)", class = "b"), -->
+<!--   set_prior("normal(0, 10)", class = "Intercept") -->
+<!-- ) -->
+
+<!-- ordinal_model_fit2_normal_10 <- brm( -->
+<!--   formula = Rating ~ International.Shipping * Product.Category, -->
+<!--   data = merch_data_updated, -->
+<!--   family = cumulative(), -->
+<!--   prior = prior_sensitive_2, -->
+<!--   sample_prior = TRUE, -->
+<!--   iter = 2000,  -->
+<!--   warmup = 1000, -->
+<!--   chains = 4,  -->
+<!--   cores = parallel::detectCores(),  -->
+<!--   seed = 123 -->
+<!-- ) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- saveRDS(ordinal_model_fit2_normal_10, file = "ordinal_model_fit2_normal_10.rds") -->
+<!-- ``` -->
+
+
+```{r}
+ordinal_model_fit2_normal_10 <- readRDS("ordinal_model_fit2_normal_10.rds")
+```
+
+
+```{r}
+summary(ordinal_model_fit2_normal_10)
+```
+
+```{r}
+summary(ordinal_model_fit2)
+```
+
+
+# Compare Posterior Distribution between 3 models
+
+
+```{r}
+
+plot(ordinal_model_fit2, type = "dens") 
+plot(ordinal_model_fit2_normal_1, type = "dens")
+plot(ordinal_model_fit2_normal_10, type = "dens")
+
+```
+```{r}
+
+#png("ordinal_model_fit2.png", width = 2000, height = 1500, res = 300)
+mcmc_plot(ordinal_model_fit2, type = "trace") 
+
+```
+
+
+```{r}
+
+#png("ordinal_model_fit2_normal_1.png", width = 2000, height = 1500, res = 300)
+mcmc_plot(ordinal_model_fit2_normal_1, type = "trace")
+
+```
+
+```{r}
+
+#png("ordinal_model_fit2_normal_10.png", width = 2000, height = 1500, res = 300)
+mcmc_plot(ordinal_model_fit2_normal_10, type = "trace")
+
+```
+
+# Visualize Differences in Posteriors
+
+```{r}
+variables(ordinal_model_fit2)
+
+```
+
+```{r}
+
+# Density plots to visualize differences
+mcmc_areas(
+  as.array(ordinal_model_fit2),
+  pars = c("b_International.ShippingNo", "b_Product.Category2",                     "b_Product.Category3","b_International.ShippingNo:Product.Category2","b_International.ShippingNo:Product.Category3")
+  
+)
+
+```
+
+
+```{r}
+
+mcmc_areas(
+  as.array(ordinal_model_fit2_normal_1),
+  pars = c("b_International.ShippingNo", "b_Product.Category2",                     "b_Product.Category3","b_International.ShippingNo:Product.Category2","b_International.ShippingNo:Product.Category3")
+  
+  
+)
+
+```
+
+
+
+
+```{r}
+
+mcmc_areas(
+  as.array(ordinal_model_fit2_normal_10),
+  pars = c("b_International.ShippingNo", "b_Product.Category2",                     "b_Product.Category3","b_International.ShippingNo:Product.Category2","b_International.ShippingNo:Product.Category3")
+  
+)
+
+```
+
+
+
+# Prior Predictive Check
+
+# Prior Predictive Check for ordinal_model_fit2 normal(0,5)
+
+<!-- ```{r} -->
+
+
+<!--   prior_sensitive_0 <- c( -->
+<!--   set_prior("normal(0, 5)", class = "b"), -->
+<!--   set_prior("normal(0, 5)", class = "Intercept") -->
+<!-- ) -->
+
+<!-- # Fit the model using only priors (Normal(0,5)) -->
+<!-- ordinal_model_fit2_sens0 <- brm( -->
+<!--   formula = Rating ~ International.Shipping * Product.Category,   -->
+<!--   data = merch_data_updated,   -->
+<!--   family = cumulative(),   -->
+<!--   prior = prior_sensitive_0,  -->
+<!--   sample_prior = "only",  # Generate data from prior samples only -->
+<!--   iter = 2000,  -->
+<!--   chains = 4, -->
+<!--   control = list(adapt_delta = 0.999, max_treedepth = 20), -->
+<!--   cores = parallel::detectCores(),  -->
+<!--   seed = 123 -->
+<!-- ) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- saveRDS(ordinal_model_fit2_sens0, file = "ordinal_model_fit2_sens0.rds") -->
+<!-- ``` -->
+
+
+
+```{r}
+
+ordinal_model_fit2_sens0 <- readRDS("ordinal_model_fit2_sens0.rds")
+
+```
+
+
+```{r}
+
+# Prior predictive checks
+pp_check(ordinal_model_fit2_sens0, ndraws = 100)
+
+```
+
+
+
+
+
+# Model with normal(0,1)
+
+<!-- ```{r} -->
+
+
+<!-- prior_sensitive_1 <- c( -->
+<!--   set_prior("normal(0, 1)", class = "b"), -->
+<!--   set_prior("normal(0, 1)", class = "Intercept") -->
+<!-- ) -->
+
+<!-- # Fit the model using only priors (Normal(0,1)) -->
+
+<!-- ordinal_model_prior_sens1 <- brm( -->
+<!--   formula = Rating ~ International.Shipping * Product.Category,   -->
+<!--   data = merch_data_updated,   -->
+<!--   family = cumulative(),   -->
+<!--   prior = prior_sensitive_1,  -->
+<!--   sample_prior = "only",  # Generate data from prior samples only -->
+<!--   iter = 2000,  -->
+<!--   chains = 4, -->
+<!--   control = list(adapt_delta = 0.999, max_treedepth = 20), -->
+<!--   cores = parallel::detectCores(),  -->
+<!--   seed = 123 -->
+<!-- ) -->
+
+
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- saveRDS(ordinal_model_prior_sens1, file = "ordinal_model_prior_sens1.rds") -->
+<!-- ``` -->
+
+
+
+
+```{r}
+
+ordinal_model_prior_sens1 <- readRDS("ordinal_model_prior_sens1.rds")
+
+```
+
+
+
+```{r}
+# Prior predictive checks
+pp_check(ordinal_model_prior_sens1, ndraws = 100) 
+```
+
+
+
+
+# model with normal(0,10)
+
+<!-- ```{r} -->
+
+
+<!-- prior_sensitive_2 <- c( -->
+<!--   set_prior("normal(0, 10)", class = "b"), -->
+<!--   set_prior("normal(0, 10)", class = "Intercept") -->
+<!-- ) -->
+
+<!-- ordinal_model_prior_sens10 <- brm( -->
+<!--   formula = Rating ~ International.Shipping * Product.Category, -->
+<!--   data = merch_data_updated, -->
+<!--   family = cumulative(), -->
+<!--   prior = prior_sensitive_2, -->
+<!--   sample_prior = "only", #Generate data from prior samples only -->
+<!--   iter = 2000,  -->
+<!--   control = list(adapt_delta = 0.999, max_treedepth = 20), -->
+<!--   chains = 4,  -->
+<!--   cores = parallel::detectCores(),  -->
+<!--   seed = 123 -->
+<!-- ) -->
+
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- saveRDS(ordinal_model_prior_sens10, file = "ordinal_model_prior_sens10.rds") -->
+<!-- ``` -->
+
+
+```{r}
+
+ordinal_model_prior_sens10 <- readRDS("ordinal_model_prior_sens10.rds")
+
+```
+
+
+```{r}
+# Prior Predictive Check
+pp_check(ordinal_model_prior_sens10, ndraws = 100) 
+
+```
+
+
+# Prior Predictive vs Posterior Predictive
+
+```{r}
+#png("Normal0_5.png", width = 2000, height = 1500, res = 300)
+
+library(gridExtra)
+
+prior_plot <- pp_check(ordinal_model_fit2_sens0, ndraws = 100) +
+  ggtitle("Prior Predictive Check")
+
+posterior_plot <- pp_check(ordinal_model_fit2, ndraws = 100) +
+  ggtitle("Posterior Predictive Check")
+
+# Side-by-side arrangement
+grid.arrange(prior_plot, posterior_plot, ncol = 2)
+
+```
+
+
+
+
+```{r}
+#png("Normal0_1.png", width = 2000, height = 1500, res = 300)
+
+library(gridExtra)
+
+prior_plot <- pp_check(ordinal_model_prior_sens1, ndraws = 100) +
+  ggtitle("Prior Predictive Check")
+
+posterior_plot <- pp_check(ordinal_model_fit2_normal_1, ndraws = 100) +
+  ggtitle("Posterior Predictive Check")
+
+# Side-by-side arrangement
+grid.arrange(prior_plot, posterior_plot, ncol = 2)
+
+```
+
+
+
+
+```{r}
+#png("Normal0_10.png", width = 2000, height = 1500, res = 300)
+
+library(gridExtra)
+
+prior_plot <- pp_check(ordinal_model_prior_sens10, ndraws = 100) +
+  ggtitle("Prior Predictive Check")
+
+posterior_plot <- pp_check(ordinal_model_fit2_normal_10, ndraws = 100) +
+  ggtitle("Posterior Predictive Check")
+
+# Side-by-side arrangement
+grid.arrange(prior_plot, posterior_plot, ncol = 2)
+
+```
+
+
+
+
+
+# Posterior Distributions Across Different Priors
+
+```{r}
+
+
+# Extracting posterior samples and add labels
+
+# Posterior predictive check
+
+#png("psteriordistribution 1.png", width = 2000, height = 1500, res = 300)
+
+post_norm5 <- as_draws_df(ordinal_model_fit2) %>% mutate(Prior = "Normal(0,5)")
+post_norm1 <- as_draws_df(ordinal_model_fit2_normal_1) %>% mutate(Prior = "Normal(0,1)")
+post_norm10 <- as_draws_df(ordinal_model_fit2_normal_10) %>% mutate(Prior = "Normal(0,10)")
+
+# Combining posterior samples into one dataframe
+
+combined_post <- bind_rows(post_norm5,post_norm1, post_norm10)
+
+# Reshaping data for plotting
+combined_long <- pivot_longer(combined_post,
+                              cols = starts_with("b_"),
+                              names_to = "Parameter",
+                              values_to = "Value")
+
+# Generate the prior sensitivity comparison plot
+ggplot(combined_long, aes(x = Value, color = Prior)) +
+  geom_density(linewidth = 0.8, alpha = 0.8) +
+  facet_wrap(~ Parameter, scales = "free") +
+  theme_bw() +
+  labs(title = "Posterior Distributions Across Different Priors",
+       x = "Posterior Value",
+       y = "Density",
+       color = "Prior Distribution")
+#dev.off()
+
+```
+
+
+# Check Model Fit using LOO-Comparison
+
+```{r}
+loo_ordinal_fit2 <- loo(ordinal_model_fit2)
+loo_ordinal_fit2_normal_1 <- loo(ordinal_model_fit2_normal_1)
+loo_ordinal_fit2_normal_10 <- loo(ordinal_model_fit2_normal_10)
+
+print(loo_ordinal_fit2)
+print(loo_ordinal_fit2_normal_1 )
+print(loo_ordinal_fit2_normal_10)
+
+```
+
+
+
+```{r}
+# Compare models
+loo_comparison <- loo_compare(loo_ordinal_fit2,loo_ordinal_fit2_normal_1, loo_ordinal_fit2_normal_10)
+print(loo_comparison)
+```
+
+
+```{r}
+
+# Converting to dataframe for plotting
+
+loo_df <- as.data.frame(loo_comparison)
+loo_df$model <- rownames(loo_df)
+
+# Plot Model Comparison
+
+p <- ggplot(loo_df, aes(x = reorder(model, -elpd_diff), y = elpd_diff)) +
+  geom_pointrange(aes(ymin = elpd_diff - se_diff, ymax = elpd_diff + se_diff),
+                  size = 1, color = "red") +
+  coord_flip() +
+  labs(title = "Model Accuracy Comparison using LOO",
+       x = "Model",
+       y = "ELPD Difference (LOO)") +
+  theme_minimal(base_size = 15) +
+  theme(
+    panel.background = element_rect(fill = "white"),
+    plot.background = element_rect(fill = "white")
+  )
+
+# Display and save the plot
+
+print(p)
+ggsave("loo_comparison_plot.png", plot = p, width = 10, height = 6, dpi = 300)
+
+```
+
+
+
+
+<!-- ```{r} -->
+
+<!-- Model Names -->
+
+<!-- ordinal_model_fit1, ordinal_model_fit2 , ordinal_model_fit2_normal_1 , ordinal_model_fit2_normal_10,  -->
+
+<!-- hierarchical_model,hierarchical_model_2 -->
+
+<!-- prior predictive check : ordinal_model_fit2_sens0 , ordinal_model_fit2_sens1 , ordinal_model_fit2_sens10 -->
+
+<!-- ``` -->
+
+
