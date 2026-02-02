@@ -1,3 +1,3 @@
-# Applied-Bayesian-Data-Analysis-Project-Group-14
+# Applied-Bayesian-Data-Analysis-Project
 The Impact of International Shipping on Product Ratings: A Bayesian Approach .
 To explore this relationship, we utilized Bayesian methods for their robust statistical approach towards handling uncertainty and integrating prior knowledge into the analysis.Given that the ratings are inherently ordered, implementing Bayesian ordinal regression models quantifies the uncertainty associated with the effect of international shipping and provides more reliable probabilistic estimates than traditional frequentist methods. Using hierarchical models, we explored how buyer demographics and product categories respond to shipping-related influences. Finally, we validated the performance of the models withLeave-One-Out (LOO) cross-validation.
